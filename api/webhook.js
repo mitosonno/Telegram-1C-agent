@@ -3,98 +3,52 @@
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const C1_BASE_URL = process.env.C1_BASE_URL;       // http://YOUR_SERVER/1c/hs/...
+const C1_BASE_URL = process.env.C1_BASE_URL;
 const C1_USERNAME = process.env.C1_USERNAME;
 const C1_PASSWORD = process.env.C1_PASSWORD;
 const ALLOWED_CHAT_IDS = process.env.ALLOWED_CHAT_IDS?.split(",").map(Number) || [];
 
-// ─── 1C OData sorğuları ───────────────────────────────────────────────────────
+// ─── 1C API sorğuları ─────────────────────────────────────────────────────────
 
-async function fetchFrom1C(endpoint, params = "") {
-  const url = `${C1_BASE_URL}/odata/standard.odata/${endpoint}?$format=json${params ? "&" + params : ""}`;
-  const auth = Buffer.from(`${C1_USERNAME}:${C1_PASSWORD}`).toString("base64");
+async function fetchFrom1C(endpoint) {
+  const url = `${C1_BASE_URL}/${endpoint}`;
 
   const res = await fetch(url, {
     headers: {
-      Authorization: `Basic ${auth}`,
       Accept: "application/json",
+      "ngrok-skip-browser-warning": "true",
     },
   });
 
-  if (!res.ok) throw new Error(`1C xəta: ${res.status} ${res.statusText}`);
+  if (!res.ok) throw new Error(`API xəta: ${res.status}`);
   return res.json();
 }
 
-// Satış hesabatı — bu ay
 async function getSalesReport() {
-  const now = new Date();
-  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split("T")[0];
-
   try {
-    const data = await fetchFrom1C(
-      "Document_ПродажаТоваровУслуг", // Satış sənədləri
-      `$filter=Date ge datetime'${firstDay}T00:00:00' and Date le datetime'${lastDay}T23:59:59'&$select=Date,Number,Amount,Counterparty_Key`
-    );
-    return data.value || [];
+    return await fetchFrom1C("sales");
   } catch (e) {
     return { error: e.message };
   }
 }
 
-// Anbar qalıqları
+async function getStats() {
+  try {
+    return await fetchFrom1C("stats");
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
 async function getInventory() {
   try {
-    const data = await fetchFrom1C(
-      "AccumulationRegister_ТоварыНаСкладах/Balance()", // Anbar qalıqları
-      `$select=Nomenclature_Key,Warehouse_Key,QuantityBalance,AmountBalance`
-    );
-    return data.value || [];
+    return await fetchFrom1C("inventory");
   } catch (e) {
     return { error: e.message };
   }
 }
 
-// Ən çox satan məhsullar
-async function getTopProducts(limit = 10) {
-  try {
-    const data = await fetchFrom1C(
-      "AccumulationRegister_Продажи/Balance()",
-      `$select=Nomenclature_Key,QuantityBalance,AmountBalance&$top=${limit}&$orderby=AmountBalance desc`
-    );
-    return data.value || [];
-  } catch (e) {
-    return { error: e.message };
-  }
-}
-
-// Mənfəət/Zərər
-async function getProfitLoss() {
-  try {
-    const data = await fetchFrom1C(
-      "AccumulationRegister_ДоходыИРасходы/Balance()",
-      `$select=Item_Key,AmountBalance`
-    );
-    return data.value || [];
-  } catch (e) {
-    return { error: e.message };
-  }
-}
-
-// Debitor borclar
-async function getReceivables() {
-  try {
-    const data = await fetchFrom1C(
-      "AccumulationRegister_РасчетыСКлиентами/Balance()",
-      `$select=Counterparty_Key,AmountBalance&$filter=AmountBalance gt 0`
-    );
-    return data.value || [];
-  } catch (e) {
-    return { error: e.message };
-  }
-}
-
-// ─── Hansı məlumatı çəkəcəyimizi AI ilə müəyyən edirik ───────────────────────
+// ─── AI intent müəyyən etmə ───────────────────────────────────────────────────
 
 async function determineIntent(userMessage) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -109,12 +63,10 @@ async function determineIntent(userMessage) {
       messages: [
         {
           role: "system",
-          content: `Sən bir 1C biznes analitika agentinin məntiq hissəsisən.
-İstifadəçinin mesajını oxu və hansı məlumat lazım olduğunu JSON formatında qaytar.
-Cavab yalnız JSON olmalıdır, heç bir əlavə mətn olmadan.
-Format: {"intents": ["sales", "inventory", "products", "profit", "receivables"]}
-Mümkün intent-lər: sales (satışlar), inventory (anbar/mallar), products (ən çox satan), profit (mənfəət/zərər/hesabat), receivables (borclar/debitor)
-Bir neçə intent ola bilər.`,
+          content: `İstifadəçinin mesajını oxu və hansı məlumat lazım olduğunu JSON formatında qaytar.
+Cavab yalnız JSON olmalıdır.
+Format: {"intents": ["sales", "inventory", "stats"]}
+Mümkün intentlər: sales (satışlar), inventory (anbar), stats (statistika, hesabat, mənfəət)`,
         },
         { role: "user", content: userMessage },
       ],
@@ -129,7 +81,7 @@ Bir neçə intent ola bilər.`,
   }
 }
 
-// ─── AI ilə Azərbaycanca cavab hazırlama ─────────────────────────────────────
+// ─── AI cavab hazırlama ───────────────────────────────────────────────────────
 
 async function generateAnswer(userMessage, businessData) {
   const today = new Date().toLocaleDateString("az-AZ", {
@@ -156,15 +108,14 @@ Tarix: ${today}
 Xüsusiyyətlərin:
 - Azərbaycan dilində aydın, peşəkar, amma dostane cavab verirsən
 - Rəqəmləri analiz edirsən, sadəcə siyahılamırsan
-- Həmişə konkret tövsiyə verirsən ("Bu məhsulun ehtiyatı azalır, sifariş edin" kimi)
-- Müqayisə aparırsan (bu ay vs keçən ay, plan vs fakt)
-- Mənfəət marjasını hesablayırsan
+- Həmişə konkret tövsiyə verirsən
+- Müqayisə aparırsan
 - Emojidən ağıllı istifadə edirsən (📊 📈 ⚠️ ✅)
 - Əgər məlumat əldə etmək mümkün olmayıbsa, bunu açıq deyirsən
 
 Cavab formatı — Telegram Markdown:
 *Başlıq* — bold
-\`rəqəm\` — code formatı (pul məbləğləri üçün)
+\`rəqəm\` — code formatı
 • — siyahı elementi`,
         },
         {
@@ -179,7 +130,7 @@ Cavab formatı — Telegram Markdown:
   return data.choices?.[0]?.message?.content || "Məlumatı emal edərkən xəta baş verdi.";
 }
 
-// ─── Telegram mesaj göndər ───────────────────────────────────────────────────
+// ─── Telegram mesaj göndər ────────────────────────────────────────────────────
 
 async function sendTelegramMessage(chatId, text) {
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -193,7 +144,7 @@ async function sendTelegramMessage(chatId, text) {
   });
 }
 
-// ─── Ana handler ─────────────────────────────────────────────────────────────
+// ─── Ana handler ──────────────────────────────────────────────────────────────
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(200).json({ ok: true });
@@ -205,13 +156,11 @@ export default async function handler(req, res) {
   const chatId = message.chat.id;
   const text = message.text || "";
 
-  // İcazə yoxlaması
   if (ALLOWED_CHAT_IDS.length > 0 && !ALLOWED_CHAT_IDS.includes(chatId)) {
     await sendTelegramMessage(chatId, "⛔ Giriş icazəniz yoxdur.");
     return res.status(200).json({ ok: true });
   }
 
-  // /start əmri
   if (text === "/start") {
     await sendTelegramMessage(
       chatId,
@@ -219,46 +168,31 @@ export default async function handler(req, res) {
 
 Məndən soruşa bilərsiniz:
 📊 *Satışlar* — "Bu ay satışlar necədir?"
-📦 *Anbar* — "Hansı malların ehtiyatı azdır?"
-💰 *Mənfəət* — "Bu rübdə mənfəət nə qədərdir?"
-🏆 *Top məhsullar* — "Ən çox satan 10 məhsul hansıdır?"
-💳 *Borclar* — "Debitor borclar nə qədərdir?"
+📦 *Anbar* — "Anbar vəziyyəti necədir?"
+📈 *Statistika* — "Ümumi hesabat ver"
 
 Sadəcə sualınızı yazın! 🚀`
     );
     return res.status(200).json({ ok: true });
   }
 
-  // "Düşünür..." göstər
   await sendTelegramMessage(chatId, "⏳ Analiz edirəm...");
 
   try {
-    // 1. Nə lazım olduğunu müəyyən et
     const intents = await determineIntent(text);
 
-    // 2. Paralel olaraq 1C-dən lazımi məlumatları çək
-    const dataPromises = {};
-    if (intents.includes("sales")) dataPromises.sales = getSalesReport();
-    if (intents.includes("inventory")) dataPromises.inventory = getInventory();
-    if (intents.includes("products")) dataPromises.products = getTopProducts();
-    if (intents.includes("profit")) dataPromises.profit = getProfitLoss();
-    if (intents.includes("receivables")) dataPromises.receivables = getReceivables();
-
     const businessData = {};
-    for (const [key, promise] of Object.entries(dataPromises)) {
-      businessData[key] = await promise;
-    }
+    if (intents.includes("sales")) businessData.sales = await getSalesReport();
+    if (intents.includes("inventory")) businessData.inventory = await getInventory();
+    if (intents.includes("stats")) businessData.stats = await getStats();
 
-    // 3. AI cavab hazırla
     const answer = await generateAnswer(text, businessData);
-
-    // 4. Göndər
     await sendTelegramMessage(chatId, answer);
   } catch (err) {
     console.error(err);
     await sendTelegramMessage(
       chatId,
-      "❌ Xəta baş verdi. 1C serveri ilə əlaqə yoxlanılır...\n\nTəfərrüat: " + err.message
+      "❌ Xəta baş verdi: " + err.message
     );
   }
 
