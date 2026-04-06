@@ -1,0 +1,6 @@
+{
+  "name": "biznes-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "1C Biznes Analitika Telegram Agent"
+}
